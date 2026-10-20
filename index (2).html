@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<title>Infinite Chess</title>
+<style>
+:root{--bg:#f4f1ea;--fg:#222;--lt:#eeeed2;--dk:#769656;--sel:#f6f669;--mv:rgba(20,85,30,.5);--chk:#e55;--btn:#fff;--bd:#bbb;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1d1d1b;--fg:#eee;--lt:#b9b9a0;--dk:#58733f;--btn:#333;--bd:#555}}
+:root[data-theme="dark"]{--bg:#1d1d1b;--fg:#eee;--lt:#b9b9a0;--dk:#58733f;--btn:#333;--bd:#555}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;padding:12px;max-width:1100px;margin:0 auto}
+h1{font-size:1.3rem;margin:4px 0}
+p.s{margin:0 0 8px;font-size:.85rem;opacity:.8}
+#bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0}
+button{background:var(--btn);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px 10px;font-size:.9rem;cursor:pointer}
+#status{font-weight:600;margin-left:auto}
+#board{display:grid;width:100%;border:2px solid var(--fg);user-select:none}
+.c{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:min(5.2vw,40px);line-height:1;position:relative;cursor:pointer}
+.c.l{background:var(--lt)}.c.d{background:var(--dk)}
+.c.sel{background:var(--sel)}.c.chk{background:var(--chk)}
+.c.mv::after{content:"";position:absolute;width:28%;height:28%;border-radius:50%;background:var(--mv)}
+.c.mv.cap::after{width:84%;height:84%;background:none;border:4px solid var(--mv)}
+.w{color:#fff;text-shadow:0 0 2px #000,0 0 2px #000,0 0 1px #000}
+.b{color:#111;text-shadow:0 0 1px #888}
+input{background:var(--btn);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:6px 10px;font-size:.9rem;width:150px}
+.n{position:absolute;bottom:1px;right:3px;font-size:9px;opacity:.6;color:#000}
+</style>
+</head>
+<body>
+<h1>♞ Infinite Chess</h1>
+<p class="s">The board is endlessly wide, and every piece except the king has endless copies. Each side has one king (file 4). Play online: one player types a room code and clicks Host (White); the other types the same code and clicks Join (Black). Pan with the buttons, arrow keys or mouse wheel. No castling or en passant; pawns promote to queens. Sliding moves reach up to 40 squares.</p>
+<div id="bar">
+<button id="p-">« 8</button><button id="p1-">‹</button><button id="p1">›</button><button id="p+">8 »</button>
+<button id="kw">Go to ♔ White king</button><button id="kb">Go to ♚ Black king</button><button id="rs">New game</button>
+<span id="status"></span>
+</div>
+<div id="lobby" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0">
+<input id="code" placeholder="room code" maxlength="20"><button id="host">Host game (White)</button><button id="join">Join game (Black)</button><button id="local">Play locally (hot-seat)</button><span id="info" class="s"></span></div>
+<div id="board"></div>
+<script>
+const G={R:'♜',N:'♞',B:'♝',Q:'♛',K:'♚',P:'♟\uFE0E'};
+const ROW=['R','N','B','Q','Q','B','N','R'];
+let online=false,code='',me=null,n=0,peer=null,conn=null,first=false;
+let ov,turn,kings,sel,moves,x0,over,msg,cols;
+const key=(x,y)=>x+','+y;
+function base(x,y){
+  if(y==1)return 'wP'; if(y==6)return 'bP';
+  if(y==0||y==7){const c=y?'b':'w';
+    if(x==4)return c+'K';
+    return c+ROW[((x%8)+8)%8];}
+  return null;
+}
+function get(x,y){if(y<0||y>7)return undefined;const k=key(x,y);return ov.has(k)?ov.get(k):base(x,y)}
+function set(x,y,p){ov.set(key(x,y),p)}
+const N8=[[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]];
+const K8=[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+const RD=K8.slice(0,4),BD=K8.slice(4);
+function attacked(x,y,by){
+  for(const[a,b]of N8)if(get(x+a,y+b)==by+'N')return true;
+  for(const[a,b]of K8)if(get(x+a,y+b)==by+'K')return true;
+  const py=by=='w'?y-1:y+1;
+  if(get(x-1,py)==by+'P'||get(x+1,py)==by+'P')return true;
+  for(const[a,b]of K8){
+    const diag=a&&b;
+    for(let i=1;i<=120;i++){
+      const p=get(x+a*i,y+b*i);
+      if(p===undefined)break;
+      if(p){if(p[0]==by&&(p[1]=='Q'||p[1]==(diag?'B':'R')))return true;break}
+    }
+  }
+  return false;
+}
+function pseudo(x,y){
+  const p=get(x,y),c=p[0],t=p[1],o=c=='w'?'b':'w',out=[];
+  const add=(a,b)=>{const q=get(a,b);if(q===undefined)return false;if(q&&q[0]==c)return false;out.push([a,b,!!q]);return !q};
+  if(t=='P'){
+    const d=c=='w'?1:-1,st=c=='w'?1:6;
+    if(get(x,y+d)===null){out.push([x,y+d,false]);if(y==st&&get(x,y+2*d)===null)out.push([x,y+2*d,false])}
+    for(const s of[-1,1]){const q=get(x+s,y+d);if(q&&q[0]==o)out.push([x+s,y+d,true])}
+  }else if(t=='N')for(const[a,b]of N8)add(x+a,y+b);
+  else if(t=='K')for(const[a,b]of K8)add(x+a,y+b);
+  else{
+    const dirs=t=='R'?RD:t=='B'?BD:K8;
+    for(const[a,b]of dirs)for(let i=1;i<=40;i++)if(!add(x+a*i,y+b*i))break;
+  }
+  return out;
+}
+function legal(x,y){
+  const p=get(x,y),c=p[0],o=c=='w'?'b':'w';
+  return pseudo(x,y).filter(([a,b])=>{
+    const k1=key(x,y),k2=key(a,b),h1=ov.has(k1),v1=ov.get(k1),h2=ov.has(k2),v2=ov.get(k2);
+    set(x,y,null);set(a,b,p);
+    const[kx,ky]=p[1]=='K'?[a,b]:kings[c];
+    const bad=attacked(kx,ky,o);
+    h1?ov.set(k1,v1):ov.delete(k1);h2?ov.set(k2,v2):ov.delete(k2);
+    return !bad;
+  });
+}
+function hasMove(c){
+  const[kx]=kings[c];
+  for(let x=kx-120;x<=kx+120;x++)for(let y=0;y<8;y++){
+    const p=get(x,y);if(p&&p[0]==c&&legal(x,y).length)return true;
+  }
+  return false;
+}
+function newState(){ov=new Map();turn='w';kings={w:[4,0],b:[4,7]};sel=null;moves=[];over=false;msg=''}
+function reset(){newState();x0=4-Math.floor(cols/2);render();if(online&&(me=='w'||me=='b'))save()}
+const pack=()=>({ov:JSON.stringify([...ov]),turn,kings:JSON.stringify(kings),over,msg,n});
+function load(d){ov=new Map(JSON.parse(d.ov));turn=d.turn;kings=JSON.parse(d.kings);over=d.over;msg=d.msg;n=d.n;sel=null;moves=[]}
+function save(){n++;if(conn&&conn.open)conn.send(pack())}
+const clean=v=>v.trim().toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,20);
+function cleanup(){if(peer)peer.destroy();peer=conn=null;online=false}
+function setup(c){
+  conn=c;
+  c.on('open',()=>{online=true;first=true;msg='';if(me=='w'){render();c.send(pack())}});
+  c.on('data',d=>{load(d);if(first){first=false;x0=kings[me][0]-Math.floor(cols/2)}render()});
+  c.on('close',()=>{msg='Opponent disconnected';render()});
+}
+function onErr(e){msg=e.type=='unavailable-id'?'That code is already in use. Try another.':e.type=='peer-unavailable'?'No game found with that code.':'Connection error: '+e.type;render()}
+function host(v){
+  const c=clean(v);if(!c)return;cleanup();newState();n=0;me='w';code=c;
+  peer=new Peer('ichess-'+c);
+  peer.on('open',()=>{online=true;msg='Waiting for your opponent to join…';x0=4-Math.floor(cols/2);render()});
+  peer.on('connection',k=>{if(conn&&conn.open){k.close();return}setup(k)});
+  peer.on('error',onErr);
+}
+function joinG(v){
+  const c=clean(v);if(!c)return;cleanup();newState();n=0;me='b';code=c;
+  peer=new Peer();
+  peer.on('open',()=>setup(peer.connect('ichess-'+c,{reliable:true})));
+  peer.on('error',onErr);
+}
+function move(a,b){
+  const[x,y]=sel,p=get(x,y);
+  set(x,y,null);set(a,b,p);
+  if(p[1]=='K')kings[p[0]]=[a,b];
+  if(p[1]=='P'&&(b==7||b==0))set(a,b,p[0]+'Q');
+  sel=null;moves=[];
+  turn=turn=='w'?'b':'w';
+  const[kx,ky]=kings[turn],chk=attacked(kx,ky,turn=='w'?'b':'w');
+  if(chk&&!hasMove(turn)){over=true;msg='Checkmate! '+(turn=='w'?'Black':'White')+' wins.'}
+  else msg=chk?'Check!':'';
+  if(online)save();
+}
+function render(){
+  const B=document.getElementById('board');
+  B.style.gridTemplateColumns='repeat('+cols+',1fr)';
+  const[kx,ky]=kings[turn];
+  const chk=attacked(kx,ky,turn=='w'?'b':'w');
+  let h='';
+  for(let y=7;y>=0;y--)for(let i=0;i<cols;i++){
+    const x=x0+i,p=get(x,y);
+    let c='c '+(((x+y)%2+2)%2?'l':'d');
+    if(sel&&sel[0]==x&&sel[1]==y)c+=' sel';
+    const m=moves.find(m=>m[0]==x&&m[1]==y);
+    if(m)c+=' mv'+(m[2]?' cap':'');
+    if(chk&&kx==x&&ky==y)c+=' chk';
+    h+='<div class="'+c+'" data-x="'+x+'" data-y="'+y+'">'+(p?'<span class="'+p[0]+'">'+G[p[1]]+'</span>':'')+(y==0?'<i class="n">'+x+'</i>':'')+'</div>';
+  }
+  B.innerHTML=h;
+  const role=online?' · room '+code+' · you: '+({w:'White',b:'Black',s:'spectating'}[me]):'';
+  document.getElementById('status').textContent=(msg||(over?'':(turn=='w'?'White':'Black')+' to move'))+role;
+}
+document.getElementById('board').addEventListener('click',e=>{
+  const c=e.target.closest('.c');if(!c||over)return;
+  if(online&&(me!=turn||!(conn&&conn.open)))return;
+  const x=+c.dataset.x,y=+c.dataset.y,p=get(x,y);
+  if(sel&&moves.some(m=>m[0]==x&&m[1]==y)){move(x,y);render();return}
+  if(p&&p[0]==turn){sel=[x,y];moves=legal(x,y)}else{sel=null;moves=[]}
+  render();
+});
+const pan=d=>{x0+=d;render()};
+const goto_=c=>{x0=kings[c][0]-Math.floor(cols/2);render()};
+document.getElementById('p-').onclick=()=>pan(-8);
+document.getElementById('p1-').onclick=()=>pan(-1);
+document.getElementById('p1').onclick=()=>pan(1);
+document.getElementById('p+').onclick=()=>pan(8);
+document.getElementById('kw').onclick=()=>goto_('w');
+document.getElementById('kb').onclick=()=>goto_('b');
+document.getElementById('rs').onclick=reset;
+addEventListener('keydown',e=>{if(e.key=='ArrowLeft')pan(-1);if(e.key=='ArrowRight')pan(1)});
+document.getElementById('board').addEventListener('wheel',e=>{e.preventDefault();pan(Math.sign(e.deltaX||e.deltaY))},{passive:false});
+function size(){cols=Math.max(6,Math.min(24,Math.floor(innerWidth/56)));}
+addEventListener('resize',()=>{size();render()});
+const codeEl=document.getElementById('code');
+document.getElementById('host').onclick=()=>host(codeEl.value);
+document.getElementById('join').onclick=()=>joinG(codeEl.value);
+document.getElementById('local').onclick=()=>{cleanup();me=null;reset()};
+size();reset();
+if(typeof Peer=='undefined'){for(const id of['host','join'])document.getElementById(id).disabled=true;document.getElementById('info').textContent='Online play could not load (PeerJS blocked or offline); local play still works.'}
+</script>
+</body>
+</html>
