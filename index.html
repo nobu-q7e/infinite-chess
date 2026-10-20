@@ -39,12 +39,13 @@ input{background:var(--btn);color:var(--fg);border:1px solid var(--bd);border-ra
 <span id="status"></span>
 </div>
 <div id="lobby" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0">
-<input id="code" placeholder="room code" maxlength="20"><button id="host">Host game (White)</button><button id="join">Join game (Black)</button><button id="local">Play locally (hot-seat)</button><span id="info" class="s"></span></div>
+<input id="uname" placeholder="your name" maxlength="16"><input id="code" placeholder="room code" maxlength="20"><button id="host">Host game (White)</button><button id="join">Join game (Black)</button><button id="local">Play locally (hot-seat)</button><span id="info" class="s"></span></div>
+<div id="pl" style="margin:4px 0;font-weight:600"></div>
 <div id="board"></div>
 <script>
 const G={R:'♜',N:'♞',B:'♝',Q:'♛',K:'♚',P:'♟\uFE0E'};
 const ROW=['R','N','B','Q','Q','B','N','R'];
-let online=false,code='',me=null,n=0,peer=null,conn=null,first=false;
+let names={w:'',b:''},got=false,tmo=null,online=false,code='',me=null,n=0,peer=null,conn=null,first=false;
 let ov,turn,kings,sel,moves,x0,over,msg,cols;
 const key=(x,y)=>x+','+y;
 function base(x,y){
@@ -109,29 +110,40 @@ function hasMove(c){
 }
 function newState(){ov=new Map();turn='w';kings={w:[4,0],b:[4,7]};sel=null;moves=[];over=false;msg=''}
 function reset(){newState();x0=4-Math.floor(cols/2);render();if(online&&(me=='w'||me=='b'))save()}
-const pack=()=>({ov:JSON.stringify([...ov]),turn,kings:JSON.stringify(kings),over,msg,n});
-function load(d){ov=new Map(JSON.parse(d.ov));turn=d.turn;kings=JSON.parse(d.kings);over=d.over;msg=d.msg;n=d.n;sel=null;moves=[]}
+const pack=()=>({ov:JSON.stringify([...ov]),turn,kings:JSON.stringify(kings),over,msg,n,names});
+function load(d){ov=new Map(JSON.parse(d.ov));turn=d.turn;kings=JSON.parse(d.kings);over=d.over;msg=d.msg;n=d.n;if(d.names)names={w:String(d.names.w||'').slice(0,16),b:String(d.names.b||'').slice(0,16)};sel=null;moves=[]}
 function save(){n++;if(conn&&conn.open)conn.send(pack())}
 const clean=v=>v.trim().toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,20);
-function cleanup(){if(peer)peer.destroy();peer=conn=null;online=false}
+const myName=()=>document.getElementById('uname').value.trim().slice(0,16);
+const ICE={config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}]}};
+function cleanup(){clearTimeout(tmo);if(peer)peer.destroy();peer=conn=null;online=false}
 function setup(c){
   conn=c;
-  c.on('open',()=>{online=true;first=true;msg='';if(me=='w'){render();c.send(pack())}});
-  c.on('data',d=>{load(d);if(first){first=false;x0=kings[me][0]-Math.floor(cols/2)}render()});
+  c.on('data',d=>{
+    if(d&&d.hello){names.b=String(d.name||'').slice(0,16);names.w=myName();online=true;msg='';render();c.send(pack());return}
+    load(d);got=true;if(first){first=false;x0=kings[me][0]-Math.floor(cols/2)}render()});
   c.on('close',()=>{msg='Opponent disconnected';render()});
 }
-function onErr(e){msg=e.type=='unavailable-id'?'That code is already in use. Try another.':e.type=='peer-unavailable'?'No game found with that code.':'Connection error: '+e.type;render()}
+function onErr(e){clearTimeout(tmo);msg=e.type=='unavailable-id'?'That code is already in use. Try another.':e.type=='peer-unavailable'?'No game found with that code. Has the host clicked Host?':'Connection error: '+e.type;render()}
 function host(v){
-  const c=clean(v);if(!c)return;cleanup();newState();n=0;me='w';code=c;
-  peer=new Peer('ichess-'+c);
+  const c=clean(v);if(!c)return;cleanup();newState();n=0;me='w';code=c;names={w:myName(),b:''};
+  msg='Starting…';render();
+  peer=new Peer('ichess-'+c,{config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}]}});
   peer.on('open',()=>{online=true;msg='Waiting for your opponent to join…';x0=4-Math.floor(cols/2);render()});
-  peer.on('connection',k=>{if(conn&&conn.open){k.close();return}setup(k)});
+  peer.on('connection',k=>{if(conn&&conn.open)conn.close();setup(k)});
   peer.on('error',onErr);
 }
 function joinG(v){
-  const c=clean(v);if(!c)return;cleanup();newState();n=0;me='b';code=c;
-  peer=new Peer();
-  peer.on('open',()=>setup(peer.connect('ichess-'+c,{reliable:true})));
+  const c=clean(v);if(!c)return;cleanup();newState();n=0;me='b';code=c;got=false;first=true;names={w:'',b:myName()};
+  msg='Connecting to the host…';render();
+  peer=new Peer(undefined,{config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'},{urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},{urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}]}});
+  peer.on('open',()=>{
+    const k=peer.connect('ichess-'+c,{reliable:true,serialization:'json'});
+    setup(k);
+    const hello=()=>{if(got||!conn)return;if(k.open)k.send({hello:1,name:myName()})};
+    k.on('open',()=>{online=true;hello();const t=setInterval(()=>{if(got||!conn||!k.open)clearInterval(t);else hello()},1500)});
+    tmo=setTimeout(()=>{if(!got){msg='Could not connect. Check the code, or the network may be blocking direct connections. Try again.';render()}},20000);
+  });
   peer.on('error',onErr);
 }
 function move(a,b){
@@ -162,8 +174,9 @@ function render(){
     h+='<div class="'+c+'" data-x="'+x+'" data-y="'+y+'">'+(p?'<span class="'+p[0]+'">'+G[p[1]]+'</span>':'')+(y==0?'<i class="n">'+x+'</i>':'')+'</div>';
   }
   B.innerHTML=h;
-  const role=online?' · room '+code+' · you: '+({w:'White',b:'Black',s:'spectating'}[me]):'';
-  document.getElementById('status').textContent=(msg||(over?'':(turn=='w'?'White':'Black')+' to move'))+role;
+  const role=online?' · room '+code:'';
+  document.getElementById('status').textContent=(msg||(over?'':(turn=='w'?'White':'Black')+(online&&names[turn]?' ('+names[turn]+')':'')+' to move'))+role;
+  document.getElementById('pl').textContent=online?'♔ '+(names.w||'White')+(me=='w'?' (you)':'')+'   vs   ♚ '+(names.b||'Black')+(me=='b'?' (you)':''):'';
 }
 document.getElementById('board').addEventListener('click',e=>{
   const c=e.target.closest('.c');if(!c||over)return;
@@ -186,6 +199,9 @@ addEventListener('keydown',e=>{if(e.key=='ArrowLeft')pan(-1);if(e.key=='ArrowRig
 document.getElementById('board').addEventListener('wheel',e=>{e.preventDefault();pan(Math.sign(e.deltaX||e.deltaY))},{passive:false});
 function size(){cols=Math.max(6,Math.min(24,Math.floor(innerWidth/56)));}
 addEventListener('resize',()=>{size();render()});
+const un=document.getElementById('uname');
+try{un.value=localStorage.getItem('ichess-name')||''}catch(e){}
+un.oninput=()=>{try{localStorage.setItem('ichess-name',un.value)}catch(e){}};
 const codeEl=document.getElementById('code');
 document.getElementById('host').onclick=()=>host(codeEl.value);
 document.getElementById('join').onclick=()=>joinG(codeEl.value);
